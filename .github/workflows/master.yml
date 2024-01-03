@@ -1,9 +1,9 @@
-name: "Build release"
+name: "Build master branch"
 
 on:
   push:
-    tags:
-      - app/v*.*.*
+    branches:
+      - master
 
 jobs:
   build:
@@ -15,10 +15,6 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
-
-      - name: Get version
-        id: get_version
-        run: echo "version=$(git describe --tags --always --match 'app/v*' | sed -n 's|app/\([^/-]*\)\(-.*\)\{0,1\}|\1|p')" >> $GITHUB_OUTPUT
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -49,23 +45,8 @@ jobs:
             sha256sum $file >> build/hashes.txt
           done
 
-      - name: Upload GitHub
-        uses: softprops/action-gh-release@v1
+      - name: Archive
+        uses: actions/upload-artifact@v4
         with:
-          files: build/*
-
-      - name: Upload CF bucket
-        uses: shallwefootball/upload-s3-action@v1.3.3
-        with:
-          aws_key_id: ${{ secrets.CF_KEY_ID }}
-          aws_secret_access_key: ${{ secrets.CF_KEY }}
-          aws_bucket: "hydownload"
-          endpoint: "https://bea223c61d5a41250d127bd67f51dfec.r2.cloudflarestorage.com/"
-          source_dir: "build"
-          destination_dir: "app/${{ steps.get_version.outputs.version }}"
-
-      - name: Publish to API
-        run: |
-          export HY_API_POST_KEY=${{ secrets.HY2_API_POST_KEY }}
-          pip install requests
-          python hyperbole.py publish
+          name: hysteria-master-${{ github.sha }}
+          path: build
