@@ -50,29 +50,36 @@ func getUserList(url string) ([]User, error) {
 	return responseData.Users, nil
 }
 
-func UpdateUsers(url string, interval time.Duration) {
+func UpdateUsers(url string, interval time.Duration, trafficlogger server.TrafficLogger) {
 
 	fmt.Println("用户列表自动更新服务已激活")
-
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			userList, err := getUserList(url)
-			if err != nil {
-				fmt.Println("Error:", err)
-				continue
-			}
-			lock.Lock()
-			usersMap = make(map[string]User)
-			for _, user := range userList {
-				usersMap[user.UUID] = user
-			}
-			lock.Unlock()
+	for range ticker.C {
+		userList, err := getUserList(url)
+		if err != nil {
+			fmt.Println("Error:", err)
+			continue
 		}
+		lock.Lock()
+		newUsersMap := make(map[string]User)
+		for _, user := range userList {
+			newUsersMap[user.UUID] = user
+		}
+		if trafficlogger != nil {
+			for uuid := range usersMap {
+				if _, exists := newUsersMap[uuid]; !exists {
+					fmt.Println(usersMap[uuid].ID)
+					trafficlogger.NewKick(strconv.Itoa(usersMap[uuid].ID))
+				}
+			}
+		}
+
+		usersMap = newUsersMap
+		lock.Unlock()
 	}
+
 }
 
 // 验证代码

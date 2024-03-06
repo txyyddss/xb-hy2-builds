@@ -608,18 +608,8 @@ func (c *serverConfig) fillAuthenticator(hyConfig *server.Config) error {
 		if v2boardConfig.ApiHost == "" || v2boardConfig.ApiKey == "" || v2boardConfig.NodeID == 0 {
 			return configError{Field: "auth.v2board", Err: errors.New("v2board config error")}
 		}
-		// 创建一个url.Values来存储查询参数
-		queryParams := url.Values{}
-		queryParams.Add("token", v2boardConfig.ApiKey)
-		queryParams.Add("node_id", strconv.Itoa(int(v2boardConfig.NodeID)))
-		queryParams.Add("node_type", "hysteria")
-		// 创建完整的URL，包括查询参数
-		url := v2boardConfig.ApiHost + "/api/v1/server/UniProxy/user?" + queryParams.Encode()
-
 		// 创建定时更新用户UUID协程
-		go auth.UpdateUsers(url, time.Second*5)
-
-		hyConfig.Authenticator = &auth.V2boardApiProvider{URL: url}
+		hyConfig.Authenticator = &auth.V2boardApiProvider{URL: fmt.Sprintf("%s?token=%s&node_id=%d&node_type=hysteria", c.V2board.ApiHost+"/api/v1/server/UniProxy/user", c.V2board.ApiKey, c.V2board.NodeID)}
 
 		return nil
 
@@ -639,14 +629,12 @@ func (c *serverConfig) fillTrafficLogger(hyConfig *server.Config) error {
 		hyConfig.TrafficLogger = tss
 		// 添加定时更新用户使用流量协程
 		if c.V2board != nil && c.V2board.ApiHost != "" {
-			// 创建一个url.Values来存储查询参数
-			queryParams := url.Values{}
-			queryParams.Add("token", c.V2board.ApiKey)
-			queryParams.Add("node_id", strconv.Itoa(int(c.V2board.NodeID)))
-			queryParams.Add("node_type", "hysteria")
-			go hyConfig.TrafficLogger.PushTrafficToV2boardInterval(c.V2board.ApiHost+"/api/v1/server/UniProxy/push?"+queryParams.Encode(), time.Second*60)
+			go auth.UpdateUsers(fmt.Sprintf("%s?token=%s&node_id=%d&node_type=hysteria", c.V2board.ApiHost+"/api/v1/server/UniProxy/user", c.V2board.ApiKey, c.V2board.NodeID), time.Second*5, hyConfig.TrafficLogger)
+			go hyConfig.TrafficLogger.PushTrafficToV2boardInterval(fmt.Sprintf("%s?token=%s&node_id=%d&node_type=hysteria", c.V2board.ApiHost+"/api/v1/server/UniProxy/push", c.V2board.ApiKey, c.V2board.NodeID), time.Second*60)
 		}
 		go runTrafficStatsServer(c.TrafficStats.Listen, tss)
+	} else {
+		go auth.UpdateUsers(fmt.Sprintf("%s?token=%s&node_id=%d&node_type=hysteria", c.V2board.ApiHost+"/api/v1/server/UniProxy/user", c.V2board.ApiKey, c.V2board.NodeID), time.Second*5, nil)
 	}
 	return nil
 }

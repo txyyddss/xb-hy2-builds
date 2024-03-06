@@ -43,14 +43,12 @@ func (s *trafficStatsServerImpl) PushTrafficToV2boardInterval(url string, interv
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			if err := s.PushTrafficToV2board(url); err != nil {
-				fmt.Println("用户流量信息提交失败:", err)
-			}
+	for range ticker.C {
+		if err := s.PushTrafficToV2board(url); err != nil {
+			fmt.Println("用户流量信息提交失败:", err)
 		}
 	}
+
 }
 
 // 向v2board 提交用户流量使用情况
@@ -184,4 +182,12 @@ func (s *trafficStatsServerImpl) kick(w http.ResponseWriter, r *http.Request) {
 	s.Mutex.Unlock()
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// 踢出用户名单
+func (s *trafficStatsServerImpl) NewKick(id string) bool {
+	s.Mutex.Lock()
+	s.KickMap[id] = struct{}{}
+	s.Mutex.Unlock()
+	return true
 }
