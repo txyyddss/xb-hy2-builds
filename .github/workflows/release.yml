@@ -5,89 +5,120 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.arch }}
+    name: Build (${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, aarch64]
-    env:
-      ACTIONS_ALLOW_UNSECURE_COMMANDS: true # Needed for nttld/setup-ndk@v1
 
     steps:
-      - name: Check out
+      - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up architecture emulation
-        uses: P3TERX/run-on-arch@v1
-        with:
-          arch: ${{ matrix.arch }}
-          
-      - name: Setup Go
+      - name: Get version string
+        id: get_version
+        run: echo "version=$(git describe --tags --always --match 'app/v*' | sed -n 's|app/\([^/-]*\)\(-.*\)\{0,1\}|\1|p')" >> $GITHUB_OUTPUT
+
+      # Steps for the native amd64 build
+      - name: Setup Go (amd64)
+        if: matrix.arch == 'amd64'
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
-      - name: Setup Python
+      - name: Setup Python (amd64)
+        if: matrix.arch == 'amd64'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Setup NDK
+      - name: Setup NDK (amd64)
+        if: matrix.arch == 'amd64'
+        id: setup-ndk-amd64
         uses: nttld/setup-ndk@v1
-        id: setup-ndk
         with:
           ndk-version: r26b
-          add-to-path: false
 
-      - name: Run build script
+      - name: Run build script (amd64)
+        if: matrix.arch == 'amd64'
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk-amd64.outputs.ndk-path }}
         run: |
           export HY_APP_PLATFORMS=$(sed 's/\r$//' platforms.txt | awk '!/^#/ && !/^$/' | paste -sd ",")
           python hyperbole.py build -r
 
+      # Step for the cross-compiled aarch64 build
+      - name: Run build script (aarch64)
+        if: matrix.arch == 'aarch64'
+        uses: uraimo/run-on-arch-action@v3
+        with:
+          arch: aarch64
+          distro: ubuntu22.04
+          githubToken: ${{ github.token }}
+          dockerRunArgs: |
+            --volume "${PWD}:/work" --workdir /work
+          install: |
+            apt-get update -q -y
+            apt-get install -q -y git wget unzip python3 python3-pip build-essential
+            wget -q https://go.dev/dl/go1.23.2.linux-arm64.tar.gz
+            tar -C /usr/local -xzf go1.23.2.linux-arm64.tar.gz
+            rm go1.23.2.linux-arm64.tar.gz
+          run: |
+            export PATH=$PATH:/usr/local/go/bin
+            
+            # Download and setup NDK inside the container
+            wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip -O ndk.zip
+            unzip -q ndk.zip
+            rm ndk.zip
+            export ANDROID_NDK_HOME="${PWD}/android-ndk-r26b"
+            
+            # Run the build script
+            export HY_APP_PLATFORMS=$(sed 's/\r$//' platforms.txt | awk '!/^#/ && !/^$/' | paste -sd ",")
+            python3 hyperbole.py build -r
+
+      - name: Generate hashes and package artifacts
+        run: |
+          for file in build/*; do
+            sha256sum "$file"
+          done | tee build/hashes.txt
+          
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts-${{ matrix.arch }}
-          path: build/
+          name: release-assets-${{ matrix.arch }}
+          path: build/*
+          retention-days: 1
 
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: build # Wait for all matrix build jobs to complete
+    needs: build # This job runs only after all matrix jobs in 'build' are successful
 
     steps:
-      - name: Check out
+      - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Get version
+      - name: Get version string
         id: get_version
         run: echo "version=$(git describe --tags --always --match 'app/v*' | sed -n 's|app/\([^/-]*\)\(-.*\)\{0,1\}|\1|p')" >> $GITHUB_OUTPUT
-
+        
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts/
+          path: ./artifacts
 
-      - name: Prepare release files
-        id: prep_files
+      - name: Prepare release assets
         run: |
-          mkdir release_assets
-          find artifacts -type f -exec mv {} release_assets/ \;
+          mkdir ./release-assets
+          # Move all binaries from architecture-specific subdirectories into one place
+          find ./artifacts -type f -name "*" ! -name "hashes.txt" | xargs -I {} mv {} ./release-assets/
+          # Combine all individual hash files into a single file
+          cat ./artifacts/*/hashes.txt | sort -u > ./release-assets/hashes.txt
 
-      - name: Generate hashes
-        run: |
-          cd release_assets
-          for file in ./*; do
-            if [ -f "$file" ]; then
-              sha256sum "$file" >> hashes.txt
-            fi
-          done
-      
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Release v${{ steps.get_version.outputs.version }}
+          files: ./release-assets/*
           tag_name: app/v${{ steps.get_version.outputs.version }}
-          files: release_assets/*
+          fail_on_unmatched_files: true
