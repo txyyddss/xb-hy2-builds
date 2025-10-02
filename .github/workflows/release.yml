@@ -5,30 +5,35 @@ on:
 
 jobs:
   build:
-    name: Build
+    name: Build on ${{ matrix.arch }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, aarch64]
     env:
-      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true # Needed for nttld/setup-ndk@v1
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Get version
-        id: get_version
-        run: echo "version=$(git describe --tags --always --match 'app/v*' | sed -n 's|app/\([^/-]*\)\(-.*\)\{0,1\}|\1|p')" >> $GITHUB_OUTPUT
-
+      - name: Set up architecture emulation
+        uses: P3TERX/run-on-arch@v1
+        with:
+          arch: ${{ matrix.arch }}
+          
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
-      - name: Setup Python # This is for the build script
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - uses: nttld/setup-ndk@v1
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26b
@@ -41,13 +46,48 @@ jobs:
           export HY_APP_PLATFORMS=$(sed 's/\r$//' platforms.txt | awk '!/^#/ && !/^$/' | paste -sd ",")
           python hyperbole.py build -r
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts-${{ matrix.arch }}
+          path: build/
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build # Wait for all matrix build jobs to complete
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        run: echo "version=$(git describe --tags --always --match 'app/v*' | sed -n 's|app/\([^/-]*\)\(-.*\)\{0,1\}|\1|p')" >> $GITHUB_OUTPUT
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release files
+        id: prep_files
+        run: |
+          mkdir release_assets
+          find artifacts -type f -exec mv {} release_assets/ \;
+
       - name: Generate hashes
         run: |
-          for file in build/*; do
-            sha256sum $file >> build/hashes.txt
+          cd release_assets
+          for file in ./*; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" >> hashes.txt
+            fi
           done
-
-      - name: Upload GitHub
+      
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/*
+          name: Release v${{ steps.get_version.outputs.version }}
+          tag_name: app/v${{ steps.get_version.outputs.version }}
+          files: release_assets/*
