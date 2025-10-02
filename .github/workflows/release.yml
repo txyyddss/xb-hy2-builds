@@ -1,5 +1,5 @@
-# This workflow builds the project and creates a new GitHub release.
-# The release tag is automatically set to the current date (YYYY-MM-DD).
+# This workflow builds the project and creates a GitHub release.
+# It includes logic to sync with an upstream repository before building.
 
 name: "Build and Release"
 
@@ -8,68 +8,110 @@ on:
   workflow_dispatch
 
 jobs:
-  build_and_release:
-    name: Build and Release
+  build:
+    name: Build
     runs-on: ubuntu-latest
-    
-    # Define permissions for the GITHUB_TOKEN to allow creating a release.
-    permissions:
-      contents: write
 
     steps:
-      - name: Check out repository
+      # Step 1: Check out your repository's code
+      # fetch-depth: 0 is crucial to get all git history for comparison with upstream.
+      - name: Check out
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Get current date for release tag
+      # Step 2: Sync with the upstream repository.
+      # This step checks for new commits in the upstream repo. If found, it merges them.
+      # If not, it sets an output to skip the subsequent steps.
+      - name: Sync with upstream and check for updates
+        id: sync
+        run: |
+          git remote add upstream https://github.com/cedar2025/hysteria.git
+          git fetch upstream
+          
+          # Dynamically get the default branch of the upstream repository (e.g., main, master)
+          UPSTREAM_BRANCH=$(git remote show upstream | grep 'HEAD branch' | cut -d' ' -f5)
+          echo "Upstream default branch is $UPSTREAM_BRANCH"
+
+          # Count how many new commits exist on the upstream branch
+          NEW_COMMITS=$(git rev-list HEAD..upstream/$UPSTREAM_BRANCH --count)
+          
+          if [ "$NEW_COMMITS" -eq 0 ]; then
+            echo "No new commits from upstream. Halting workflow."
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "$NEW_COMMITS new commit(s) found from upstream. Merging and proceeding."
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+            
+            # Configure git user for the merge commit
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+            
+            # Merge the changes from upstream into the current branch for this workflow run
+            git merge "upstream/$UPSTREAM_BRANCH"
+          fi
+
+      # Step 3: Get the current date to use as the release tag.
+      # This step only runs if the previous step determined a build is needed.
+      - name: Get current date for tag
+        if: steps.sync.outputs.needs_build == 'true'
         id: get_date
-        run: echo "TAG=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: echo "tag=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
+      # Step 4: Set up the Go environment.
       - name: Setup Go
+        if: steps.sync.outputs.needs_build == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
-      - name: Setup Python for build script
+      # Step 5: Set up Python for the build script.
+      - name: Setup Python
+        if: steps.sync.outputs.needs_build == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # Step 6: Set up Android NDK for mobile builds.
       - name: Setup Android NDK
+        if: steps.sync.outputs.needs_build == 'true'
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26b
-          # NDK is not added to the system path to avoid potential conflicts.
-          # Its path is exposed as an output and used via an environment variable.
           add-to-path: false
 
+      # Step 7: Execute the build script.
       - name: Run build script
+        if: steps.sync.outputs.needs_build == 'true'
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          # Ensure platforms.txt has Unix line endings and create a comma-separated list
+          # Read platforms from platforms.txt, remove comments/empty lines, and create a comma-separated list
           export HY_APP_PLATFORMS=$(sed 's/\r$//' platforms.txt | awk '!/^#/ && !/^$/' | paste -sd ",")
           python hyperbole.py build -r
 
-      - name: Generate hashes for build artifacts
+      # Step 8: Generate SHA256 hashes for the build artifacts.
+      - name: Generate hashes
+        if: steps.sync.outputs.needs_build == 'true'
         run: |
-          # Change directory to 'build' to generate hashes with clean relative paths.
-          # This also gracefully handles cases where the directory might be empty.
+          # Check if build directory exists and is not empty to prevent errors
           if [ -d "build" ] && [ "$(ls -A build)" ]; then
             cd build
-            sha256sum * > hashes.txt
+            for file in *; do
+              sha256sum "$file" >> hashes.txt
+            done
+            cd ..
           else
             echo "Build directory is empty or does not exist. Skipping hash generation."
           fi
 
-      - name: Create GitHub Release
+      # Step 9: Create a new GitHub Release with the build artifacts.
+      - name: Create Release
+        if: steps.sync.outputs.needs_build == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          # Use the date generated in a previous step as the release tag.
-          tag_name: ${{ steps.get_date.outputs.TAG }}
-          # Set a descriptive name for the release.
-          name: Release ${{ steps.get_date.outputs.TAG }}
-          # Automatically generate release notes from recent commits.
-          generate_release_notes: true
-          # Specify the files to upload as release assets.
+          tag_name: ${{ steps.get_date.outputs.tag }}
           files: build/*
+          # Automatically generate release notes from commits
+          generate_release_notes: true
