@@ -23,7 +23,7 @@ jobs:
        apt -y install curl git python3 certbot
        python3 hyperbole.py build -r
     - name: Upload file
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: Builds
         path: ./build/*
