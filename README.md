@@ -1,3 +1,4 @@
+[![Build and Release](https://github.com/txyyddss/xb-hy2-builds/actions/workflows/release.yml/badge.svg)](https://github.com/txyyddss/xb-hy2-builds/actions/workflows/release.yml)
 # ![Hysteria 2](logo.svg)
 
 # 支持对接V2board面板的Hysteria2后端
